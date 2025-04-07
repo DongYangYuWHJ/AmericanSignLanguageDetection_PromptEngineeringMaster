@@ -18,7 +18,7 @@ Your task is to identify which ASL word is being shown in the image(s). Choose o
 [HELLO, MY, NAME, IS, YOU, WHAT, THANK, LOVE, YES, NO, PLEASE, HELP, GOOD, BAD, FRIEND, SORRY, WHERE, WHO, WHEN, HOW]
 
 Please respond with only the identified ASL word in uppercase (e.g., "LOVE").
-If you are uncertain or the image is unclear, respond with "UNKNOWN".
+don't respond with any other words.
 """
 
 # Sentence generation prompt

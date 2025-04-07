@@ -16,116 +16,60 @@ genai.configure(api_key=GOOGLE_API_KEY)
 
 # Global variables
 camera = None
-recognition_thread = None
-frame_queue = Queue(maxsize=1)  # Limit queue size to 1, keep only the latest frame
-result_queue = Queue()  # For passing recognition results between threads
-is_running = True
-result_lock = threading.Lock()  # For synchronizing access to recognition results
 model = None
 persistent_chat = None  # Persistent chat context
-last_api_call_time = 0  # Record the time of last API call
+is_initialized = False  # Add initialization flag
+is_recording = False  # Recording state flag
+recorded_frames = []  # Store recorded frames
 
 def initialize_model():
     """Initialize model and persistent chat context"""
-    global model, persistent_chat
+    global model
+    if st.session_state.is_initialized:  # If already initialized, return directly
+        print("Model already initialized, skipping...")
+        return model
+        
     print("Initializing model...")  # Debug info
     model = genai.GenerativeModel('gemini-1.5-flash')
     
-    # Create persistent chat context and set base prompt
-    persistent_chat = model.start_chat(history=[])
-    persistent_chat.send_message(BASE_PROMPT)
+    # Use new initialization function
+    st.session_state.persistent_chat = init_persistent_chat(model)
+    
     print("Model and base context initialization complete")  # Debug info
+    st.session_state.is_initialized = True  # Set initialization flag
     return model
 
-def process_images(frames):
-    """Process images and return recognition results"""
+def process_recorded_frames():
+    """Process recorded frames and return recognition results"""
+    print("recorded_frames: ", len(st.session_state.recorded_frames))
+    if not st.session_state.recorded_frames or len(st.session_state.recorded_frames) < 6:
+        return "Not enough frames, cannot recognize", None
+    
     try:
-        global last_api_call_time, persistent_chat
-        current_time = time.time()
+        # Use the latest frames for processing
+        latest_frames = st.session_state.recorded_frames
         
-        # Calculate time interval since last API call
-        if last_api_call_time > 0:
-            interval = current_time - last_api_call_time
-            print(f"Time since last API call: {interval:.2f} seconds")
-        
-        # Update last API call time
-        last_api_call_time = current_time
-        
-        # Use latest 6 frames
-        latest_frames = frames[-6:] if len(frames) > 6 else frames
-        
-        # Adjust frame sizes for horizontal display of 6 frames
+        # Resize frames for horizontal display of 6 frames
         resized_frames = []
         for frame in latest_frames:
             width = frame.shape[1] // 6  # Adjust width to 1/6 of original
             height = frame.shape[0]
             resized = cv2.resize(frame, (width, height))
             resized_frames.append(resized)
-            
-        pil_images = [Image.fromarray(frame) for frame in latest_frames]
         
-        # Use persistent chat context but create new history each time
-        response = persistent_chat.send_message(
-            [DETAILED_PROMPT, *pil_images],
-            generation_config=genai.types.GenerationConfig(
-                candidate_count=1,
-                temperature=0,  # Use deterministic output
-                max_output_tokens=10,  # Limit output length
-            )
-        )
+        # Check if persistent_chat exists
+        if st.session_state.persistent_chat is None:
+            print("persistent_chat not initialized, reinitializing...")
+            initialize_model()
         
-        # Clear this conversation's history but keep base prompt
-        persistent_chat.history = persistent_chat.history[:1]  # Keep only first message (BASE_PROMPT)
-        
-        end_time = time.time()  # End timing
-        print(f"Current API call duration: {end_time - current_time:.2f} seconds")  # Print duration
+        # Call processing function from prompt_utils.py
+        result = process_images_with_api(latest_frames, st.session_state.persistent_chat)
         
         # Return results and resized frames
-        return response.text.strip(), resized_frames
+        return result, resized_frames
     except Exception as e:
-        print(f"API call error: {str(e)}")
+        print(f"Error processing frames: {str(e)}")
         return "UNKNOWN", None
-
-def recognition_worker():
-    """Sign language recognition worker thread"""
-    print("Recognition thread started")  # Debug info
-    while is_running:
-        try:
-            # Get frames from queue with 1-second timeout
-            try:
-                frames = frame_queue.get(timeout=1)
-                if frames is None:  # Exit signal
-                    print("Received exit signal, recognition thread ending")  # Debug info
-                    break
-                
-                print("Processing new frames")  # Debug info
-                # Perform recognition
-                result, used_frames = process_images(frames)
-                print(f"Recognition result: {result}")  # Debug info
-                
-                # Update recognition results in thread-safe way
-                with result_lock:
-                    # Put results and frames into queue
-                    result_queue.put((result, used_frames))
-                    print(f"Put result {result} into result queue")  # Debug info
-                
-            except Empty:
-                # Queue is empty, continue waiting
-                continue
-                
-        except Exception as e:
-            print(f"Recognition thread error: {str(e)}")  # Debug info
-            continue
-
-def start_recognition_thread():
-    """Start recognition thread"""
-    global recognition_thread
-    if recognition_thread is None or not recognition_thread.is_alive():
-        print("Starting recognition thread...")  # Debug info
-        recognition_thread = threading.Thread(target=recognition_worker)
-        recognition_thread.daemon = True
-        recognition_thread.start()
-        print("Recognition thread started")  # Debug info
 
 def initialize_camera():
     """Initialize camera and model"""
@@ -138,156 +82,158 @@ def initialize_camera():
         camera.set(cv2.CAP_PROP_FPS, FRAME_RATE)
         print("Camera initialization complete")  # Debug info
         
-        # Initialize model
-        model = initialize_model()
-        print("Model initialization complete")  # Debug info
+        # Initialize model only if not already initialized
+        if not st.session_state.is_initialized:
+            model = initialize_model()
+            print("Model initialization complete")  # Debug info
 
 def cleanup():
     """Clean up resources"""
-    global camera, recognition_thread, is_running
+    global camera
     print("Starting resource cleanup...")  # Debug info
-    is_running = False
-    frame_queue.put(None)
-    if recognition_thread:
-        recognition_thread.join()
+    st.session_state.recording_active = False
+    st.session_state.recorded_frames = []
     if camera:
         camera.release()
     camera = None
-    recognition_thread = None
+    st.session_state.is_initialized = False  # Reset initialization flag
+    st.session_state.camera_initialized = False  # Reset camera initialization flag
     print("Resource cleanup complete")  # Debug info
 
 # Initialize session state
 if 'recognized_words' not in st.session_state:
     st.session_state.recognized_words = []
-if 'last_gesture_time' not in st.session_state:
-    st.session_state.last_gesture_time = 0
-if 'current_sentence' not in st.session_state:
-    st.session_state.current_sentence = ""
-if 'frames' not in st.session_state:
-    st.session_state.frames = deque(maxlen=10)  # Increase queue length to store more frames
-if 'last_frame_time' not in st.session_state:
-    st.session_state.last_frame_time = 0
-if 'frame_count' not in st.session_state:
-    st.session_state.frame_count = 0
 if 'recognition_results' not in st.session_state:
     st.session_state.recognition_results = deque(maxlen=5)  # Store recognition results
-if 'last_recognition_time' not in st.session_state:
-    st.session_state.last_recognition_time = 0
+if 'recording_active' not in st.session_state:
+    st.session_state.recording_active = False
+if 'processing_result' not in st.session_state:
+    st.session_state.processing_result = None
+if 'processed_frames' not in st.session_state:
+    st.session_state.processed_frames = None
+if 'is_initialized' not in st.session_state:
+    st.session_state.is_initialized = False
+if 'camera_initialized' not in st.session_state:
+    st.session_state.camera_initialized = False
+if 'recorded_frames' not in st.session_state:
+    st.session_state.recorded_frames = []
+if 'persistent_chat' not in st.session_state:
+    st.session_state.persistent_chat = None
 
 def main():
-    st.title("Real-time Sign Language Recognition System")
-    st.write("Real-time display of camera feed and sign language recognition results")
-
-    # Create two-column layout with adjusted width ratio
-    col1, col2 = st.columns([1, 1.5])  # Increase right column width to accommodate more frames
-
-    with col1:
-        st.subheader("Live Camera Feed")
-        camera_placeholder = st.empty()
-
-    with col2:
-        st.subheader("Frames Used for API Call")
-        frames_container = st.container()
-        with frames_container:
-            frames_placeholder = st.empty()
-            result_text = st.empty()
-        st.subheader("Recognition Results")
-        results_placeholder = st.empty()
-
-    # Control buttons area
-    button_col1, button_col2 = st.columns(2)
-    with button_col1:
-        if st.button("Clear Results", key="clear_frames_button"):
-            print("Clear results button clicked")  # Debug info
-            with result_lock:  # Use lock to protect clearing operation
-                st.session_state.frames.clear()
-                st.session_state.recognition_results.clear()
-            # Clear frame queue and result queue
-            while not frame_queue.empty():
-                try:
-                    frame_queue.get_nowait()
-                except Empty:
-                    break
-            while not result_queue.empty():
-                try:
-                    result_queue.get_nowait()
-                except Empty:
-                    break
-            frames_placeholder.empty()
-            result_text.empty()
-            results_placeholder.empty()
+    global camera
     
-    with button_col2:
-        if st.button("Exit", key="exit_button"):
-            print("Exit button clicked")  # Debug info
-            cleanup()
+    st.title("Sign Language Recognition System")
+    st.write("Record sign language gestures and recognize them")
 
-    # Initialize camera and start recognition thread
-    initialize_camera()
-    start_recognition_thread()
-
-    # Track API call status
-    api_call_in_progress = False
-    
-    # Main loop
-    while is_running:
-        ret, frame = camera.read()
-        if not ret:
-            st.error("Cannot read camera feed")
-            break
-
-        # Adjust frame size
-        frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
+    # Create sidebar for control buttons
+    with st.sidebar:
+        st.subheader("Control Panel")
         
-        # Update frames
-        st.session_state.frames.append(frame)
-        
-        # Display live feed
-        camera_placeholder.image(frame, channels="BGR")
-        
-        # Check for new recognition results
-        try:
-            result, used_frames = result_queue.get_nowait()
-            api_call_in_progress = False  # Mark API call as complete
-            
-            with result_lock:
-                # Display frame sequence
-                if used_frames and len(used_frames) > 0:
-                    # Create horizontally stacked frame sequence
-                    combined_frame = np.hstack(used_frames)
-                    frames_placeholder.image(combined_frame, channels="BGR", use_container_width=True)
-                    result_text.markdown(f"**Recognition Result:** {result}")
-                else:
-                    frames_placeholder.write("Waiting for sufficient frames...")
+        # Start/Stop recording buttons
+        if st.button("Start Recording", key="start_recording_button", type="primary"):
+                print("Start recording button clicked")  # Debug info
+                st.session_state.recording_active = True
+                st.session_state.recorded_frames = []  # Clear previous recording
+                st.success("Recording started! Please make sign language gestures.")
+        if st.button("Stop Recording and Recognize", key="stop_recording_button", type="secondary"):
+                print("Stop recording button clicked")  # Debug info
+                st.session_state.recording_active = False
+                st.info("Recording stopped, processing...")
                 
-                # Save result
-                if result != "UNKNOWN":
+                # Process recorded frames
+                result, processed_frames = process_recorded_frames()
+                st.session_state.processing_result = result
+                st.session_state.processed_frames = processed_frames
+                
+                # Save results
+                if result != "UNKNOWN" and result != "Not enough frames, cannot recognize":
                     st.session_state.recognition_results.append(result)
-                    # Keep result list no longer than 5
+                    # Keep results list no more than 5
                     while len(st.session_state.recognition_results) > 5:
                         st.session_state.recognition_results.popleft()
-        except Empty:
-            pass
+                
+                st.success(f"Recognition complete! Result: {result}")
         
-        # Only send new frames when no API call is in progress
-        if not api_call_in_progress and len(st.session_state.frames) >= 6:
-            try:
-                recent_frames = list(st.session_state.frames)[-6:]  # Get latest 6 frames
-                frame_queue.put(recent_frames, timeout=0.1)
-                api_call_in_progress = True  # Mark API call as started
-                print("Sending new frames for recognition")  # Debug info
-            except Full:
-                print("Frame queue is full, skipping current frame")
+        st.divider()
         
-        # Display historical recognition results
+        if st.button("Clear Results", key="clear_results_button"):
+            print("Clear results button clicked")  # Debug info
+            st.session_state.recognition_results.clear()
+            st.session_state.processing_result = None
+            st.session_state.processed_frames = None
+            st.success("Results cleared!")
+        
+        st.divider()
+        
+        if st.button("Exit", key="exit_button", type="secondary"):
+            print("Exit button clicked")  # Debug info
+            cleanup()
+            st.stop()
+
+    # Create two-column layout
+    col1, col2 = st.columns([1, 1.5])
+
+    with col1:
+        st.subheader("Real-time Camera Feed")
+        camera_placeholder = st.empty()
+        
+        # Display recording status
+        if st.session_state.recording_active:
+            st.warning("Recording in progress...")
+        else:
+            st.info("Not recording")
+
+    with col2:
+        st.subheader("Processed Frames")
+        frames_placeholder = st.empty()
+        
+        st.subheader("Recognition Result")
+        result_text = st.empty()
+        
+        st.subheader("Recognition History")
+        results_placeholder = st.empty()
+
+    # Initialize camera and model
+    initialize_camera()
+
+    # Main loop
+    while True:
+        ret, frame = camera.read()
+        if not ret:
+            st.error("Unable to read camera feed")
+            break
+
+        # Resize frame
+        frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
+        
+        # Display real-time feed (whether recording or not)
+        camera_placeholder.image(frame, channels="BGR", use_container_width=True)
+        
+        # If recording, save frames
+        if st.session_state.recording_active:
+            print("Recording frames: ", len(st.session_state.recorded_frames))
+            st.session_state.recorded_frames.append(frame)
+            # Limit saved frames to avoid memory overflow
+            if len(st.session_state.recorded_frames) > 30:  # Save at most 30 frames
+                st.session_state.recorded_frames.pop(0)
+        
+        # Display processed frames and results
+        if st.session_state.processed_frames is not None:
+            combined_frame = np.hstack(st.session_state.processed_frames)
+            frames_placeholder.image(combined_frame, channels="BGR", use_container_width=True)
+            result_text.markdown(f"**Recognition Result:** {st.session_state.processing_result}")
+        
+        # Display recognition history
         if st.session_state.recognition_results:
-            results_text = ["Historical Recognition Results:"]
+            results_text = ["Recognition History:"]
             for i, result in enumerate(st.session_state.recognition_results):
                 results_text.append(f"{i+1}. {result}")
             results_placeholder.markdown("\n".join(results_text))
         
         # Control frame rate
-        time.sleep(0.0167)  # Approximately 60fps
+        time.sleep(0.33)
 
 if __name__ == "__main__":
     main() 
+    
