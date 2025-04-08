@@ -1,6 +1,7 @@
 # Sign Language Recognition System
 
 A try to utilize prompt engineering to mimic the effect of fine-tuning
+
 only use gemini API to identify sign language that gemini don't know before
 
 ## Features
