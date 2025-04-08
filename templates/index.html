@@ -1,0 +1,35 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="icon" href="data:image/png;base64,iVBORw0KGgo=">
+    <title>Flask Camera Effects</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" type="text/css">
+</head>
+<body>
+    <h1>Flask Camera Effects</h1>
+    
+    <div class="effect-buttons">
+        <button onclick="changeEffect('none')">Normal</button>
+        <button onclick="changeEffect('grayscale')">Grayscale</button>
+        <button onclick="changeEffect('blur')">Blur</button>
+        <button onclick="changeEffect('edge')">Edge Detection</button>
+        <button onclick="changeEffect('invert')">Invert Colors</button>
+        <button onclick="changeEffect('resize_small')">Resize</button>
+    </div>
+    
+    <div id="video-container">
+        <img id="video-feed" src="{{ url_for('video_feed') }}" alt="Load video failed">
+    </div>
+
+    <div id="result-container">
+        <h2>Result:</h2>
+        <p id="result-text">Let's see what you are doing! </p>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/changeEffect.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/updateResult.js') }}"></script>
+
+
+</body>
+</html>
