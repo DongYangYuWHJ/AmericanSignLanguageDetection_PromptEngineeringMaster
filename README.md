@@ -83,3 +83,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Google Gemini AI for providing the sign language recognition capabilities
 - Streamlit for the web application framework
 - OpenCV for computer vision capabilities
+
+## TEAM
+DONGHUI YU
+
+MINGYI SU
+
+XINYU BO
